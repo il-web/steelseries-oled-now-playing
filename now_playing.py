@@ -5,12 +5,25 @@ Shows current media info (title, artist, progress bar) on the keyboard OLED scre
 
 import asyncio
 import json
+import logging
 import os
 import sys
+import threading
 import time
 
+import pystray
 import requests
 from PIL import Image, ImageDraw, ImageFont
+
+# Log to file for debugging (especially when running .pyw with no console)
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "now_playing.log")
+logging.basicConfig(
+    filename=log_path,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("now_playing")
 
 # --- SteelSeries GameSense SDK ---
 
@@ -363,19 +376,38 @@ def render_idle():
     return img
 
 
+# --- System Tray ---
+
+running = True
+
+
+def create_tray_icon():
+    """Create a simple tray icon image (music note)."""
+    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # Background circle
+    draw.ellipse([4, 4, 60, 60], fill=(30, 30, 30, 255))
+    # Music note shape
+    draw.ellipse([14, 36, 30, 50], fill=(255, 255, 255, 255))
+    draw.ellipse([34, 30, 50, 44], fill=(255, 255, 255, 255))
+    draw.rectangle([28, 12, 32, 40], fill=(255, 255, 255, 255))
+    draw.rectangle([48, 6, 52, 34], fill=(255, 255, 255, 255))
+    draw.rectangle([28, 8, 52, 14], fill=(255, 255, 255, 255))
+    return img
+
+
+def on_quit(icon, item):
+    """Handle quit from tray menu."""
+    global running
+    running = False
+    icon.stop()
+
+
 # --- Main Loop ---
 
-def main():
-    print("SteelSeries Apex 5 - Now Playing Display")
-    print("-" * 40)
-
-    base_url = get_steelseries_address()
-    print(f"Connected to SteelSeries Engine at {base_url}")
-
-    register_game(base_url)
-    bind_screen_event(base_url)
-    print("Registered with GameSense SDK")
-    print("Monitoring media... Press Ctrl+C to stop.\n")
+def oled_loop(base_url):
+    """Main OLED update loop running in a background thread."""
+    global running
 
     last_heartbeat = 0
     last_title = None
@@ -391,15 +423,14 @@ def main():
     volume_display_until = 0  # timestamp when volume overlay should disappear
     volume_overlay_duration = 2  # seconds to show volume overlay
 
-    try:
-        while True:
+    while running:
+        try:
             now = time.time()
 
             # Check volume every frame (cheap call)
             try:
                 current_volume, current_muted = get_system_volume()
                 if last_volume is None:
-                    # First run, just store without showing overlay
                     last_volume = current_volume
                     last_muted = current_muted
                 elif abs(current_volume - last_volume) > 0.005 or current_muted != last_muted:
@@ -433,36 +464,65 @@ def main():
                           and cached_info["status"] == 4)
 
             if is_playing:
-                # Log song changes
                 if cached_info["title"] != last_title or cached_info["artist"] != last_artist:
                     last_title = cached_info["title"]
                     last_artist = cached_info["artist"]
-                    print(f"Now playing: {cached_info['artist']} - {cached_info['title']}")
 
                 frame = render_now_playing(cached_info)
             else:
                 if last_title is not None:
-                    print("Playback stopped")
                     last_title = None
                     last_artist = None
                 frame = render_idle()
 
-            # Send frame to OLED
             bitmap = image_to_bitmap(frame)
             send_frame(base_url, bitmap)
 
-            # Heartbeat every 5 seconds
             if now - last_heartbeat > 5:
                 send_heartbeat(base_url)
                 last_heartbeat = now
 
             time.sleep(frame_interval)
 
-    except KeyboardInterrupt:
-        print("\nStopping...")
-    finally:
-        cleanup(base_url)
-        print("Cleaned up. Goodbye!")
+        except Exception as e:
+            log.error(f"OLED loop error: {e}", exc_info=True)
+            time.sleep(1)
+
+    cleanup(base_url)
+    log.info("OLED loop stopped")
+
+
+def main():
+    log.info("Starting SteelSeries Now Playing")
+    base_url = get_steelseries_address()
+    log.info(f"SteelSeries Engine at {base_url}")
+    register_game(base_url)
+    bind_screen_event(base_url)
+    log.info("Registered with GameSense SDK")
+
+    # Create the system tray icon
+    icon = pystray.Icon(
+        "now_playing",
+        create_tray_icon(),
+        "SteelSeries Now Playing",
+        menu=pystray.Menu(
+            pystray.MenuItem("SteelSeries Now Playing", None, enabled=False),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Quit", on_quit),
+        ),
+    )
+
+    # Run the OLED loop in a background thread
+    oled_thread = threading.Thread(target=oled_loop, args=(base_url,), daemon=True)
+    oled_thread.start()
+
+    # Run tray icon on main thread (blocks until quit)
+    icon.run()
+
+    # Signal OLED thread to stop and wait
+    global running
+    running = False
+    oled_thread.join(timeout=3)
 
 
 if __name__ == "__main__":

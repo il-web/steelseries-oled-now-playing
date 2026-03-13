@@ -36,11 +36,13 @@ pip install -r requirements.txt
 
 ## Usage
 
+**Double-click `Start Now Playing.bat`** to run with no console window. A tray icon will appear — right-click it to quit.
+
+Or run from terminal:
+
 ```bash
 python now_playing.py
 ```
-
-Press `Ctrl+C` to stop.
 
 ## How It Works
 

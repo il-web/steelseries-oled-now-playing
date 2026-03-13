@@ -4,3 +4,4 @@ winrt-Windows.Media.Control
 winrt-Windows.Foundation
 pycaw
 comtypes
+pystray
