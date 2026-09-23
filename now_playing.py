@@ -223,7 +223,7 @@ def register_game(base_url):
     resp = http.post(f"{base_url}/game_metadata", timeout=REQUEST_TIMEOUT, json={
         "game": GAME_NAME,
         "game_display_name": "Now Playing",
-        "developer": "Custom",
+        "developer": "il-web",
     })
     resp.raise_for_status()
 
