@@ -55,7 +55,7 @@ body:
     id: logs
     attributes:
       label: Error logs
-      description: Paste any errors from the console or from `now_playing.log`.
+      description: Paste any errors from the log (tray menu → **Open log**, or `%APPDATA%\SteelSeriesNowPlaying\now_playing.log`).
       render: text
     validations:
       required: false

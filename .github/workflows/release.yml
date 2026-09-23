@@ -1,0 +1,39 @@
+name: Build NowPlaying.exe
+
+# Run by hand from the Actions tab; the .exe is available as a build artifact.
+# Not triggered on tags for now: the .exe is unsigned, so Smart App Control
+# blocks it. To publish it with releases later (e.g. once it's code-signed), add:
+#   push:
+#     tags: ["v*"]
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: python build.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NowPlaying
+          path: dist/NowPlaying.exe
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NowPlaying.exe
