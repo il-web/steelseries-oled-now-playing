@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import logging.handlers
+import math
 import os
 import subprocess
 import sys
@@ -19,6 +20,11 @@ import time
 import unicodedata
 import winreg
 from datetime import datetime, timezone
+
+# comtypes (used by pycaw for the volume) reads this when first imported. The
+# default single-threaded COM apartment needs a message pump that the OLED
+# loop doesn't run, which makes WinRT calls such as reading album art hang.
+sys.coinit_flags = 0  # COINIT_MULTITHREADED
 
 import psutil
 import pystray
@@ -67,6 +73,7 @@ DEFAULT_SETTINGS = {
     "clock_24h": True,
     "clock_show_date": True,
     "volume_overlay": True,
+    "startup_animation": True,
     "weather_city": "",
     "weather_units": "celsius",  # "celsius" or "fahrenheit"
     "scroll_speed": 2,           # pixels per frame
@@ -322,6 +329,7 @@ def get_system_volume():
 # --- Windows Media Info ---
 
 ART_SIZE = OLED_HEIGHT  # album art is a square filling the screen height
+MEDIA_QUERY_TIMEOUT = 5  # seconds
 
 # Album art for the current track, so it is only downloaded once per song
 _art_cache = {"key": None, "image": None}
@@ -411,6 +419,42 @@ async def get_media_info(fetch_art=False):
         "duration": duration_secs,
         "art": art,
     }
+
+
+class MediaWatcher:
+    """Runs media queries on their own thread, one at a time.
+
+    The OLED loop only reads the latest result, so a slow or stuck Windows
+    media call can never freeze the display.
+    """
+
+    def __init__(self):
+        self.info = None
+        self._busy = False
+        self._started_at = 0
+        self._stuck_logged = False
+
+    def refresh(self, fetch_art):
+        if self._busy:
+            if not self._stuck_logged and time.time() - self._started_at > MEDIA_QUERY_TIMEOUT:
+                log.warning("Media info query is stuck; showing the last known info")
+                self._stuck_logged = True
+            return
+        self._busy = True
+        self._started_at = time.time()
+        threading.Thread(target=self._query, args=(fetch_art,), daemon=True).start()
+
+    def _query(self, fetch_art):
+        try:
+            self.info = asyncio.run(get_media_info(fetch_art=fetch_art))
+        except Exception as e:
+            log.error(f"Media info query failed: {e}", exc_info=True)
+        finally:
+            self._busy = False
+            self._stuck_logged = False
+
+
+media_watcher = MediaWatcher()
 
 
 def current_position(info, is_playing):
@@ -1047,6 +1091,78 @@ def render_weather(data, error):
     return img
 
 
+STARTUP_FPS = 20
+STARTUP_FRAMES = 44  # 2.2 seconds
+
+
+def ease(t):
+    """Smooth 0..1 -> 0..1 (ease in-out)."""
+    t = min(max(t, 0.0), 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def lerp(a, b, t):
+    return a + (b - a) * t
+
+
+def render_startup_frame(i):
+    """Frame i of the startup animation: bouncing equalizer bars that slide
+    left while "Now Playing" wipes in and a loading bar fills."""
+    img = Image.new("1", (OLED_WIDTH, OLED_HEIGHT), 0)
+    draw = ImageDraw.Draw(img)
+
+    # Phases (in frames): bars alone -> bars slide left -> text wipes in
+    # -> loading bar fills -> short hold on the finished frame
+    move = ease((i - 10) / 8)
+    reveal_t = ease((i - 16) / 9)
+    fill = ease((i - 24) / 14)
+
+    # Equalizer geometry, interpolated from big + centred to small + left
+    bar_count = 5
+    bar_width = round(lerp(5, 3, move))
+    gap = round(lerp(3, 2, move))
+    max_height = lerp(30, 20, move)
+    bottom = round(lerp(36, 31, move))
+    group_width = bar_count * bar_width + (bar_count - 1) * gap
+    left = round(lerp((OLED_WIDTH - group_width) / 2, 6, move))
+    grow = min(i / 5, 1.0)  # bars rise from nothing at the start
+
+    for k in range(bar_count):
+        bounce = 0.25 + 0.75 * abs(math.sin(i * 0.45 + k * 1.3))
+        height = max(round(max_height * bounce * grow), 1)
+        x = left + k * (bar_width + gap)
+        draw.rectangle([x, bottom - height + 1, x + bar_width - 1, bottom], fill=1)
+
+    # "Now Playing" revealed left to right
+    if reveal_t > 0:
+        text_x = 34
+        font = get_font(14)
+        text = "Now Playing"
+        text_img = Image.new("1", (OLED_WIDTH - text_x, OLED_HEIGHT), 0)
+        ImageDraw.Draw(text_img).text((0, 22), text, fill=1, font=font, anchor="ls")
+        reveal = round(font.getlength(text) * reveal_t) + 1
+        visible = text_img.crop((0, 0, reveal, OLED_HEIGHT))
+        img.paste(visible, (text_x, 0), visible)  # masked: don't erase the bars
+
+        # Loading bar under the text
+        if fill > 0:
+            bar_right = text_x + round((OLED_WIDTH - 4 - text_x) * fill)
+            draw.rectangle([text_x, 29, bar_right, 30], fill=1)
+
+    return img
+
+
+def play_startup_animation(base_url):
+    """Show the startup animation once (about 2 seconds)."""
+    start = time.monotonic()
+    for i in range(STARTUP_FRAMES):
+        if stop_event.is_set() or display_paused.is_set():
+            return
+        send_frame(base_url, image_to_bitmap(render_startup_frame(i)))
+        # Wait until this frame's slot ends, so sending time doesn't slow the animation
+        stop_event.wait(max(start + (i + 1) / STARTUP_FPS - time.monotonic(), 0))
+
+
 IDLE_SCREENS = ("clock", "stats", "weather")
 
 
@@ -1259,6 +1375,7 @@ def build_menu():
             choice("Fahrenheit", "weather_units", "fahrenheit"),
         )),
         toggle("Volume overlay", "volume_overlay"),
+        toggle("Startup animation", "startup_animation"),
         separator,
         pystray.MenuItem("Pause display", on_toggle_pause,
                          checked=lambda item: display_paused.is_set()),
@@ -1283,6 +1400,7 @@ def oled_loop():
     last_media_fetch = 0
     last_settings_check = 0
     cached_info = None
+    startup_played = False
     frame_interval = 0.1  # 10 FPS for smooth scrolling
     media_fetch_interval = 2  # fetch media info every 2 seconds
     resend_interval = 1  # resend an unchanged frame at most this often
@@ -1317,6 +1435,11 @@ def oled_loop():
                 last_url = base_url
                 last_bitmap = None
                 last_heartbeat = 0
+                # Only on app start, not when reconnecting after a GG restart
+                if not startup_played:
+                    startup_played = True
+                    if settings["startup_animation"]:
+                        play_startup_animation(base_url)
 
             # Check volume every frame (cheap call)
             try:
@@ -1342,7 +1465,8 @@ def oled_loop():
                 if now - last_media_fetch >= media_fetch_interval:
                     # Set before fetching so a failing query also waits the full interval
                     last_media_fetch = now
-                    cached_info = asyncio.run(get_media_info(fetch_art=settings["album_art"]))
+                    media_watcher.refresh(fetch_art=settings["album_art"])
+                cached_info = media_watcher.info
 
                 # Status 4 = Playing in the SMTC enum
                 is_playing = (cached_info and cached_info["title"]

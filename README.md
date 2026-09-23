@@ -21,6 +21,7 @@ Any SteelSeries keyboard with a 128x40 OLED screen:
 - Japanese, Chinese, Korean, Hebrew, Arabic and emoji titles display correctly (fallback fonts + right-to-left support, including scrolling direction)
 - Idle screen when nothing is playing: clock (12/24h, optional date), CPU/RAM/network stats, current weather, or cycle through all of them
 - Volume overlay when you change system volume (shows bar + percentage + mute state)
+- Short startup animation on the OLED when the app starts
 - Everything configurable from the system tray menu
 - Start with Windows, pause the display, single instance
 - Survives SteelSeries GG restarts and can be started before GG (reconnects automatically)
@@ -63,6 +64,7 @@ A music-note icon appears in the system tray. Right-click it for options:
 | **Now playing** | Show album art; time display (elapsed / total, elapsed / remaining, hidden) |
 | **When idle** | Clock, system stats, weather, or cycle through all; 24-hour clock; show date; set weather city; °C / °F |
 | **Volume overlay** | Show the volume bar when you change the volume |
+| **Startup animation** | Play the intro animation when the app starts |
 | **Pause display** | Give the OLED back to SteelSeries GG until you unpause |
 | **Start with Windows** | Launch automatically when you log in |
 | **Open settings file** | Edit advanced settings (see below) |
